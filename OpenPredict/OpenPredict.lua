@@ -1,5 +1,5 @@
 --[[
-  OpenPredict 0.01a
+  OpenPredict 0.02a
 
   THIS SCRIPT IS STILL IN ALPHA STAGE THEREFORE YOU MAY EXPERIENCE BUGS.
 
@@ -11,16 +11,19 @@
       .meta
 
     methods:
-      :hCollision(bOnlyCheck) - Setting bOnlyCheck to check causes the function to return once a collision is detected
-      :mCollision(bOnlyCheck) - Setting bOnlyCheck to check causes the function to return once a collision is detected
+      :hCollision(n) - Setting bOnlyCheck to check causes the function to return once a collision is detected
+      :mCollision(n) - Setting bOnlyCheck to check causes the function to return once a collision is detected
 
   spellData
     .delay - Initial delay before the spell is cast.
     .speed - Projectile speed (if exists).
+    .accel - Projectile acceleration.
+    .minSpeed - Minimum projectile speed.
+    .maxSpeed - Maximum projectile speed.
     .width - Full width of the spell (2 × radius).
     .range - Maximum range of the spell.
 
-    .radius - Radius of the spell (radius ÷ 2).
+    .radius - Radius of the spell (width ÷ 2).
     .angle - Angle of the spell (used for GetConicAOEPrediction).
 
   Core methods:
@@ -60,7 +63,7 @@ local activeWaypoints = { }
 local minionUnits = { }
 local allyHeroes, enemyHeroes = { }, { }
 
-local min, max, deg, acos, sin, sqrt, epsilon = math.min, math.max, math.deg, math.acos, math.sin, math.sqrt, 1e-9
+local min, max, deg, acos, sin, sqrt, abs, epsilon = math.min, math.max, math.deg, math.acos, math.sin, math.sqrt, math.abs, 1e-9
 local insert, remove = table.insert, table.remove
 
 --[[
@@ -70,8 +73,8 @@ local insert, remove = table.insert, table.remove
     predictInfo.new(vec3)
 
   Methods:
-    predictInfo:hCollision()
-    predictInfo:hCollision()
+    predictInfo:hCollision(n)
+    predictInfo:hCollision(n)
 
   Members:
     predictInfo.x
@@ -97,7 +100,7 @@ function predictInfo.new(vec3)
   return pI
 end
 
-function predictInfo:hCollision(bOnlyCheck)
+function predictInfo:hCollision(n)
   local result, threshold = { }, math.huge
   local source, sq_range = self.meta.source, self.meta.range and self.meta.range * self.meta.range or math.huge
 
@@ -107,10 +110,7 @@ function predictInfo:hCollision(bOnlyCheck)
       local t = CollisionTime(source, self.castPos, enemy, self.meta.delay, self.meta.speed, self.meta.width)
 
       if t and t > 0 then
-        if bOnlyCheck then
-          return true
-        end
-
+        if n and #result + 1 > n then return true end
         insert(result, t < threshold and 1 or #result, enemy)
       end
     end
@@ -119,7 +119,7 @@ function predictInfo:hCollision(bOnlyCheck)
   return #result > 0 and result
 end
 
-function predictInfo:mCollision(bOnlyCheck)
+function predictInfo:mCollision(n)
   local result, threshold = { }, math.huge
   local source, sq_range = self.meta.source, self.meta.range and self.meta.range * self.meta.range or math.huge
 
@@ -129,10 +129,7 @@ function predictInfo:mCollision(bOnlyCheck)
       local t = CollisionTime(source, self.castPos, minion, self.meta.delay, self.meta.speed, self.meta.width)
 
       if t and t > 0 then
-        if bOnlyCheck then
-          return true
-        end
-
+        if n and #result + 1 > n then return true end
         insert(result, t < threshold and 1 or #result, minion)
       end
     end
@@ -183,6 +180,13 @@ function GetPrediction(unit, spellData, sourcePos)
 
         -- Greater of the two roots
         t = t + max(t1, t2)
+
+        if spellData.accel then
+          local v = speed + spellData.accel * t
+          if spellData.minSpeed then v = math.max(spellData.minSpeed, v) end
+          if spellData.maxSpeed then v = math.min(spellData.maxSpeed, v) end
+          t = abs((v - speed) / spellData.accel)
+        end
       end
 
       if i == activeWaypoints[nID].count - 1 or (t > 0 and t < timeElapsed + travelTime) then
@@ -213,7 +217,6 @@ function GetPrediction(unit, spellData, sourcePos)
             local d1, d2 = sqrt((p2.x - p1.x) ^ 2 + (p2.z - p1.z) ^ 2), sqrt(v.x * v.x + v.z * v.z)
             local theta = max(1, deg(acos(dot / (d1 * d2))))
 
-            --pI.hitChance = pI.hitChance * ((1 - theta / 180) / rate)
             pI.hitChance = pI.hitChance * (1 - ((theta * rate) / (180 * rate)))
           end
         end
@@ -282,6 +285,7 @@ function GetLinearAOEPrediction(unit, spellData, sourcePos)
 
         -- Check whether castPos in within spell boundary
         if (castPos.x - projection.x) ^ 2 + (castPos.z - projection.y) ^ 2 < threshold then
+          PrintChat(GetObjectName(enemy))
           table.insert(points, { x = castPos.x, y = castPos.z })
         end
       end
@@ -300,10 +304,48 @@ function GetLinearAOEPrediction(unit, spellData, sourcePos)
       end
 
       local slope = (xy - x * (y / nCount)) / (x2 - x * (x / nCount))
-      if slope ~= math.huge then
-        local intercept = (y / nCount) - slope * (x / nCount)
+      local intercept = (y / nCount) - slope * (x / nCount)
 
-        aoeCastPos.z = slope * p1.x + intercept
+      aoeCastPos.z = slope * p1.x + intercept
+      pI.x, pI.y, pI.z = aoeCastPos.x, aoeCastPos.y, aoeCastPos.z
+    end
+  end
+
+  return pI
+end
+
+function GetLinearAOEPrediction2(unit, spellData, sourcePos)
+  local pI = GetPrediction(unit, spellData, sourcePos)
+
+  if spellData.width and spellData.width > 1 and spellData.range and spellData.range < math.huge then
+    local aoeCastPos, threshold = pI.castPos, (2 * spellData.width) ^ 2
+    local p1, p2 = pI.meta.source, { x = pI.x, y = pI.y, z = pI.z }
+    local dx, dy = p2.x - p1.x, p2.z - p1.z
+
+    do -- Extend vector to match range
+      local magnitude = math.sqrt(dx * dy + dy * dy)
+      p2.x = p2.x + (dx / magnitude) * spellData.range
+      p2.z = p2.z + (dy / magnitude) * spellData.range
+    end
+
+    for _, enemy in pairs(enemyHeroes) do
+      if enemy ~= unit and IsVisible(enemy) and IsObjectAlive(enemy) and IsTargetable(enemy) and not IsImmune(enemy, myHero) then
+        local p = GetPrediction(enemy, spellData, sourcePos).castPos
+
+        -- Project castPos onto source-endPos
+        local d = ((castPos.x - p1.x) * dx + (castPos.z - p1.z) * dy)
+
+        if sqrt(d) < spellData.range then
+          local t = d / (spellData.range * spellData.range)
+          local projection = { x = p1.x + t * dx, y = p1.z + t * dy }
+          local perpendicular = (p.x - projection.x) ^ 2 + (p.z - projection.y) ^ 2
+
+          -- Check whether castPos in within spell boundary
+          if perpendicular < threshold then
+            aoeCastPos.x, aoeCastPos.z = 0.5 * (aoeCastPos.x + p.x), 0.5 * (aoeCastPos.z + p.z)
+            threshold = threshold - (0.5 * perpendicular)
+          end
+        end
       end
     end
   end
@@ -315,23 +357,22 @@ function GetCircularAOEPrediction(unit, spellData, sourcePos)
   local pI = GetPrediction(unit, spellData, sourcePos)
 
   if (spellData.radius and spellData.radius > 1) or (spellData.width and spellData.width > 1) then
-    local radius = spellData.radius or 0.5 * spellData.width
-    local aoeCastPos, threshold = { x = pI.x, y = pI.y, z = pI.z }, (4 * radius) ^ 2
+    local width = spellData.width or 1 * spellData.radius
+    local aoeCastPos, threshold = pI.castPos, (2 * width) ^ 2
 
     for _, enemy in pairs(enemyHeroes) do
       if enemy ~= unit and IsVisible(enemy) and IsObjectAlive(enemy) and IsTargetable(enemy) and not IsImmune(enemy, myHero) then
         local p = GetPrediction(enemy, spellData, sourcePos).castPos
-        local m_sq = (p.x - pI.x) ^ 2 + (p.z - pI.z) ^ 2
+        local m_sq = (p.x - aoeCastPos.x) ^ 2 + (p.z - aoeCastPos.z) ^ 2
 
         if m_sq < threshold then
           aoeCastPos.x, aoeCastPos.z = 0.5 * (aoeCastPos.x + p.x), 0.5 * (aoeCastPos.z + p.z)
-          threshold = max(radius * radius, m_sq)
+          threshold = threshold - (0.5 * m_sq)
         end
       end
     end
 
     pI.x, pI.y, pI.z = aoeCastPos.x, aoeCastPos.y, aoeCastPos.z
-    pI.castPos = aoeCastPos
   end
 
   return pI
@@ -340,30 +381,36 @@ end
 function GetConicAOEPrediction(unit, spellData, sourcePos)
   local pI = GetPrediction(unit, spellData, sourcePos)
 
-  if spellData.angle and spellData.angle > 1 then
-    local aoeCastPos, threshold = { x = pI.x, y = pI.y, z = pI.z }, (2 * range * sin(spellData.angle)) ^ 2
+  if spellData.angle and spellData.angle > 1 and spellData.range and spellData.range < math.huge then
+    local aoeCastPos, threshold = pI.castPos, 2 * spellData.angle
+    local p1, p2 = pI.meta.source, { x = pI.x, y = pI.y, z = pI.z }
+    local dx, dy = p2.x - p1.x, p2.z - p1.z
+
+    do -- Extend vector to match range
+      local magnitude = math.sqrt(dx * dy + dy * dy)
+      p2.x = p2.x + (dx / magnitude) * spellData.range
+      p2.z = p2.z + (dy / magnitude) * spellData.range
+    end
 
     for _, enemy in pairs(enemyHeroes) do
       if enemy ~= unit and IsVisible(enemy) and IsObjectAlive(enemy) and IsTargetable(enemy) and not IsImmune(enemy, myHero) then
         local p = GetPrediction(enemy, spellData, sourcePos).castPos
+        local d1 = sqrt((p.x - p1.x) ^ 2 + (p.z - p1.z) ^ 2)
 
-        local d1 = sqrt((aoeCastPos.x - sourcePos.x) ^ 2 + (aoeCastPos.z - sourcePos.z) ^ 2)
-        local d2 = sqrt((p.x - sourcePos.x) ^ 2 + (p.z - sourcePos.z) ^ 2)
+        if d1 < spellData.range then
+          local d2 = sqrt((aoeCastPos.x - p1.x) ^ 2 + (aoeCastPos.z - p1.z) ^ 2)
+          local dot = (aoeCastPos.x - p1.x) * (p.x - p1.x) + (aoeCastPos.z - p1.z) * (p.z - p1.z)
 
-        if d2 < spellData.range then
-          local x, y = (p.x / d2) * d1, (p.z / d2) * d1
-          local m_sq = (x - aoeCastPos.x) ^ 2 + (y - aoeCastPos.z) ^ 2
-
-          if m_sq < threshold then
+          local theta = deg(acos(dot / (d1 * d2)))
+          if theta < threshold then
             aoeCastPos.x, aoeCastPos.z = 0.5 * (aoeCastPos.x + p.x), 0.5 * (aoeCastPos.z + p.z)
-            threshold = max((range * sin(spellData.angle)) ^ 2, m_sq)
+            threshold = theta
           end
         end
       end
     end
 
     pI.x, pI.y, pI.z = aoeCastPos.x, aoeCastPos.y, aoeCastPos.z
-    pI.castPos = aoeCastPos
   end
 
   return pI
@@ -440,12 +487,11 @@ local function OnObjectLoad(object)
   end
 end
 
+local inactiveMinions = { }
 local function OnCreateObj(object)
-  ASleep(function(arg1)
-    if IsMinionUnit(arg1) then
-      insert(minionUnits, arg1)
-    end
-  end, 0.3, object)
+  if IsMinionUnit(object) then
+    insert(inactiveMinions, object)
+  end
 end
 
 local function OnDeleteObj(object)
@@ -470,7 +516,6 @@ end
 --[[
   UTILITY
 
-  ASleep - Executes a method asynchronously after specified delay.
   IsMinionUnit - Returns true if passed unit is a valid minion.
   GetMinions - Minion iterator.
   GetWaypoints - Waypoint iterator.
@@ -480,33 +525,24 @@ end
   CollisionTime - Calculates the time of trajectory collision.
 ]]
 
-local sleepingMethods = { }
-
-_G.OnTick(function()
-  local curTime = GetGameTimer()
-
-  for i = #sleepingMethods, 1, -1 do
-    if curTime > sleepingMethods[i].executionTime then
-      sleepingMethods[i].method(unpack(sleepingMethods[i].args))
-      remove(sleepingMethods, i)
+_G.OnTick(
+  function()
+  for i = #inactiveMinions, -1, 1 do
+    local nID = GetNetworkID(inactiveMinions[i])
+    if nID and nID > 0 and nID < math.huge then
+      insert(minionUnits, inactiveMinions[i])
+      remove(inactiveMinions, i)
     end
   end
-end)
-
-ASleep = function(method, delay, ...)
-  insert(sleepingMethods, { method = method, args = {...}, executionTime = GetGameTimer() + delay })
 end
+)
 
 IsMinionUnit = function(object)
   if object and GetObjectType(object) == Obj_AI_Minion then
-    local networkID = GetNetworkID(object)
+    local team = GetTeam(object)
 
-    if networkID and networkID > 0 and networkID ~= math.huge then
-      local team = GetTeam(object)
-
-      if team and team > 0 and team % 100 == 0 then
-        return GetHitBox(object) > 0 and GetMoveSpeed(object) > 0
-      end
+    if team and team > 0 and team % 100 == 0 then
+      return GetHitBox(object) > 0 and GetMoveSpeed(object) > 0
     end
   end
 end
@@ -577,7 +613,7 @@ IsAttacking = function(unit)
 end
 
 IsImmobile = function(unit)
-	local nID = GetNetworkID(unit)
+  local nID = GetNetworkID(unit)
 
   if activeImmobility[nID] then
     return GetGameTimer() < activeImmobility[nID].ExpireTime, activeImmobility[nID].ExpireTime - GetGameTimer()
