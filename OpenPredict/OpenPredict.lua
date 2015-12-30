@@ -260,68 +260,11 @@ function GetLinearAOEPrediction(unit, spellData, sourcePos)
   local pI = GetPrediction(unit, spellData, sourcePos)
 
   if spellData.width and spellData.width > 1 and spellData.range and spellData.range < math.huge then
-    -- So Lua treats tables as pointers
     local aoeCastPos, threshold = pI.castPos, (2 * spellData.width) ^ 2
     local p1, p2 = pI.meta.source, { x = pI.x, y = pI.y, z = pI.z }
-    local dx, dy = p2.x - p1.x, p2.z - p1.z
 
     do -- Extend vector to match range
-      local magnitude = math.sqrt(dx * dy + dy * dy)
-      p2.x = p2.x + (dx / magnitude) * spellData.range
-      p2.z = p2.z + (dy / magnitude) * spellData.range
-    end
-
-    -- Least Squares
-    local points = { }
-    table.insert(points, { x = aoeCastPos.x, y = aoeCastPos.z })
-
-    for _, enemy in pairs(enemyHeroes) do
-      if enemy ~= unit and IsVisible(enemy) and IsObjectAlive(enemy) and IsTargetable(enemy) and not IsImmune(enemy, myHero) then
-        local castPos = GetPrediction(enemy, spellData, sourcePos).castPos
-
-        -- Project castPos onto source-endPos
-        local t = ((castPos.x - p1.x) * (p2.x - p1.x) + (castPos.z - p1.z) * (p2.z - p1.z)) / (spellData.range * spellData.range)
-        local projection = { x = p1.x + t * dx, y = p1.z + t * dy }
-
-        -- Check whether castPos in within spell boundary
-        if (castPos.x - projection.x) ^ 2 + (castPos.z - projection.y) ^ 2 < threshold then
-          table.insert(points, { x = castPos.x, y = castPos.z })
-        end
-      end
-    end
-
-    local nCount = #points
-
-    if nCount > 1 then
-      local x, y, x2, xy = 0, 0, 0, 0
-
-      for i = 1, #points do
-        x = x + points[i].x
-        y = y + points[i].y
-        x2 = x2 + points[i].x ^ 2
-        xy = xy + points[i].x * points[i].y
-      end
-
-      local slope = (xy - x * (y / nCount)) / (x2 - x * (x / nCount))
-      local intercept = (y / nCount) - slope * (x / nCount)
-
-      aoeCastPos.z = slope * p1.x + intercept
-      pI.x, pI.y, pI.z = aoeCastPos.x, aoeCastPos.y, aoeCastPos.z
-    end
-  end
-
-  return pI
-end
-
-function GetLinearAOEPrediction2(unit, spellData, sourcePos)
-  local pI = GetPrediction(unit, spellData, sourcePos)
-
-  if spellData.width and spellData.width > 1 and spellData.range and spellData.range < math.huge then
-    local aoeCastPos, threshold = pI.castPos, (2 * spellData.width) ^ 2
-    local p1, p2 = pI.meta.source, { x = pI.x, y = pI.y, z = pI.z }
-    local dx, dy = p2.x - p1.x, p2.z - p1.z
-
-    do -- Extend vector to match range
+      local dx, dy = p2.x - p1.x, p2.z - p1.z
       local magnitude = math.sqrt(dx * dy + dy * dy)
       p2.x = p2.x + (dx / magnitude) * spellData.range
       p2.z = p2.z + (dy / magnitude) * spellData.range
@@ -330,19 +273,19 @@ function GetLinearAOEPrediction2(unit, spellData, sourcePos)
     for _, enemy in pairs(enemyHeroes) do
       if enemy ~= unit and IsVisible(enemy) and IsObjectAlive(enemy) and IsTargetable(enemy) and not IsImmune(enemy, myHero) then
         local p = GetPrediction(enemy, spellData, sourcePos).castPos
+        local c = (p.x - p1.x) * (p2.x - p1.x) + (p.z - p1.z) * (p2.z - p1.z)
 
-        -- Project castPos onto source-endPos
-        local d = ((castPos.x - p1.x) * dx + (castPos.z - p1.z) * dy)
+        if sqrt((p.x - p1.x) ^ 2 + (p.z - p1.z) ^ 2) < spellData.range then
+          local t = c / (spellData.range * spellData.range)
 
-        if sqrt(d) < spellData.range then
-          local t = d / (spellData.range * spellData.range)
-          local projection = { x = p1.x + t * dx, y = p1.z + t * dy }
-          local perpendicular = (p.x - projection.x) ^ 2 + (p.z - projection.y) ^ 2
+          if t > 0 and t < 1 then
+            local projection = { x = p1.x + t * (p2.x - p1.x), y = p1.z + t * (p2.z - p1.z) }
+            local perpendicular = (p.x - projection.x) ^ 2 + (p.z - projection.y) ^ 2
 
-          -- Check whether castPos in within spell boundary
-          if perpendicular < threshold then
-            aoeCastPos.x, aoeCastPos.z = 0.5 * (aoeCastPos.x + p.x), 0.5 * (aoeCastPos.z + p.z)
-            threshold = threshold - (0.5 * perpendicular)
+            if perpendicular < threshold then
+              aoeCastPos.x, aoeCastPos.z = 0.5 * (aoeCastPos.x + p.x), 0.5 * (aoeCastPos.z + p.z)
+              threshold = threshold - (0.5 * perpendicular)
+            end
           end
         end
       end
