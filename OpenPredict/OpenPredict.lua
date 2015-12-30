@@ -11,8 +11,8 @@
       .meta
 
     methods:
-      :hCollision(n) - Setting bOnlyCheck to check causes the function to return once a collision is detected
-      :mCollision(n) - Setting bOnlyCheck to check causes the function to return once a collision is detected
+      :hCollision(n)
+      :mCollision(n)
 
   spellData
     .delay - Initial delay before the spell is cast.
