@@ -29,9 +29,9 @@ members:
 	predictInfo.meta                          -- Internal use only.
   
 methods:
-	predictInfo:hCollision(bOnlyCheck)        -- Traces for minion collision through a linear trajectory and returns table. 
-	predictInfo:mCollision(bOnlyCheck)        -- Traces for hero collision through a linear trajectory and returns table. 
-	-- Setting the "bOnlyCheck" flag will cause the above functions to return a boolean value.
+	predictInfo:hCollision(nMaxCollision)     -- Traces for minion collision through a linear trajectory and returns table.
+	predictInfo:mCollision(nMaxCollision)     -- Traces for hero collision through a linear trajectory and returns table. 
+	-- Setting the nMaxCollision parameter to a number will casue the function to only check for n collision.
 ```
 
 #####spellData:
@@ -39,6 +39,9 @@ methods:
 spellData
 	.delay                                    -- Initial delay before the spell is cast.
 	.speed                                    -- Projectile speed (if exists).
+	.accel                                    -- Projectile acceleration.
+	.minSpeed                                 -- Minimum projectile speed.
+	.maxSpeed                                 -- Maximum projectile speed.
 	.width                                    -- Full width of the spell (2 × radius).
 	.range                                    -- Maximum range of the spell.
 
