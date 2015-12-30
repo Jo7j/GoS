@@ -285,7 +285,6 @@ function GetLinearAOEPrediction(unit, spellData, sourcePos)
 
         -- Check whether castPos in within spell boundary
         if (castPos.x - projection.x) ^ 2 + (castPos.z - projection.y) ^ 2 < threshold then
-          PrintChat(GetObjectName(enemy))
           table.insert(points, { x = castPos.x, y = castPos.z })
         end
       end
