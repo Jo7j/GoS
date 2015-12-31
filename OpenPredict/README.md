@@ -29,8 +29,8 @@ members:
 	predictInfo.meta                          -- Internal use only.
   
 methods:
-	predictInfo:hCollision(nMaxCollision)     -- Traces for minion collision through a linear trajectory and returns table.
-	predictInfo:mCollision(nMaxCollision)     -- Traces for hero collision through a linear trajectory and returns table. 
+	predictInfo:hCollision(nMaxCollision)     -- Traces for hero collision through a linear trajectory and returns table.
+	predictInfo:mCollision(nMaxCollision)     -- Traces for minion collision through a linear trajectory and returns table. 
 	-- Setting the nMaxCollision parameter to a number will casue the function to only check for n collision.
 ```
 
@@ -55,7 +55,7 @@ spellData
 local Overload = { delay = 0.25, speed = 1700, width = 55, range = 900 }
 local pI = GetPrediction(unit, Overload)
 
-if pI and pI.hitChance >= 0.25 and not pI:mCollision(true) then
+if pI and pI.hitChance >= 0.25 and not pI:mCollision(1) then
 	CastSkillShot(_Q, pI.castPos)
 end
 ```
