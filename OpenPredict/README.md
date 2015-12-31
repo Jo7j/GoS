@@ -1,4 +1,4 @@
-OpenPredict 0.01a
+OpenPredict 0.02a
 ===========
 
 #####Core Functions:
@@ -45,7 +45,7 @@ spellData
 	.width                                    -- Full width of the spell (2 × radius).
 	.range                                    -- Maximum range of the spell.
 
-	.radius                                   -- Radius of the spell (radius ÷ 2).
+	.radius                                   -- Radius of the spell (width ÷ 2).
 	.angle                                    -- Angle of the spell (used for GetConicAOEPrediction).
 ```
 
