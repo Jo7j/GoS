@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.03a] - 2016-01-07
+### Fixed
+- Minion collision (minion iteration issue).
+
 ## [0.02a] - 2015-12-30
 ### Added
 - Accelerated projectile prediction (spellData: .accel, .minSpeed, .maxSpeed).
