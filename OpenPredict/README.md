@@ -1,4 +1,4 @@
-OpenPredict 0.02a
+OpenPredict 0.03a
 ===========
 
 #####Core Functions:
@@ -14,6 +14,12 @@ All core function parameters are as follows:
 	sourcePos   - Vec3 (optional)
   
 All core functions return a predictInfo object (see below).
+```
+
+#####Extra functions:
+```lua
+GetHealthPrediction(unit, timeDelta)
+- Returns predicted health (as number)
 ```
 
 #####predictInfo:
