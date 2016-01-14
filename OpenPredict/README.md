@@ -1,4 +1,4 @@
-OpenPredict 0.03a
+OpenPredict 0.04a
 ===========
 
 #####Core Functions:
