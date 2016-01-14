@@ -235,7 +235,7 @@ function predictInfo:mCollision(n)
     if sq_range == huge or (p.x - source.x) ^ 2 + (p.z - source.z) ^ 2 - GetHitBox(minion) ^ 2 < sq_range then
       local t = CollisionTime(source, self.castPos, minion, self.meta.delay, self.meta.speed, self.meta.width)
 
-      if t and t > 0 and GetHealthPrediction(minion, 0.25 + t) > 0 then
+      if t and t > 0 and GetHealthPrediction(minion, self.meta.delay + t) > 0 then
         if n and #result + 1 > n then return true end
         insert(result, t < threshold and 1 or #result, minion)
       end
