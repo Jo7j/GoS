@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.04a] - 2016-01-14
+### Added
+- Health prediction (GetHealthPrediction).
+
+### Removed
+- Extra load message.
+
 ## [0.03a] - 2016-01-07
 ### Fixed
 - Minion collision (minion iteration issue).
