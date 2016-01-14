@@ -18,7 +18,7 @@ All core functions return a predictInfo object (see below).
 
 #####Extra functions:
 ```lua
-GetHealthPrediction(unit, timeDelta) - Returns predicted health (as number)
+GetHealthPrediction(unit, timeDelta)              -- Returns predicted health (as number).
 ```
 
 #####predictInfo:
