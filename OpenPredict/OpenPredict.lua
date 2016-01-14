@@ -1,5 +1,5 @@
 --[[
-  OpenPredict 0.03a
+  OpenPredict 0.04a
 
   THIS SCRIPT IS STILL IN ALPHA STAGE THEREFORE YOU MAY EXPERIENCE BUGS.
 
@@ -31,18 +31,95 @@
     GetLinearAOEPrediction(unit, spellData, [sourcePos])
     GetCircularAOEPrediction(unit, spellData, [sourcePos])
     GetConicAOEPrediction(unit, spellData, [sourcePos])
+
+  Extra methods:
+    GetHealthPrediction(unit, timeDelta)
 ]]
 
 -- Simple prerequisite
 if _G.OpenPredict_Loaded then return end
 
+local SCRIPT_VERSION = 0.04
+local DEV_STAGE = "a"
+
+do -- Auto Update
+  function ResourceRequest(host, requestURI, timeout)
+    -- Require the LuaSocket module
+    LuaSocket = LuaSocket or require("socket")
+    client = client or LuaSocket.tcp() -- Create the client socket
+
+    client:connect(host, 80) -- Connect to host on port 80
+
+    -- Send HTTP request
+    client:send(requestURI)
+
+    -- Receive the first line
+    local line, error = client:receive()
+    client:settimeout(timeout)
+
+    if not error and line == "HTTP/1.1 200 OK" then
+      -- Read HTTP headers
+      local headers = { }
+
+      while line ~= "" do
+        line, error = client:receive()
+        if error then PrintChat(error) end
+
+        local name, value = LuaSocket.skip(2, string.find(line, "^(.-):%s*(.*)"))
+
+        if name and value then
+          headers[name] = value
+        end
+      end
+
+      if headers["Content-Length"] then
+        data, error = client:receive(tonumber(headers["Content-Length"]))
+        if error then return PrintChat(error) end
+        return data
+      elseif headers["Transfer-Encoding"] and headers["Transfer-Encoding"] == "chunked" then
+        local buffer = ""
+        local chunkSize, data
+
+        chunkSize, error = client:receive()
+        if error then return PrintChat(error) end
+        chunkSize = tonumber(chunkSize, 16)
+
+        while chunkSize > 0 do
+          data, error = client:receive(chunkSize)
+          if error then return PrintChat(error) end
+          buffer = buffer .. data
+
+          chunkSize, error = client:receive()
+          if error then return PrintChat(error) end
+          chunkSize = tonumber(chunkSize, 16) or 0
+        end
+
+        return buffer
+      end
+    end
+  end
+
+  local latestVersion = ResourceRequest("LeagueofLua.com", "GET /OpenPredict/VERSION HTTP/1.1\r\nHost: LeagueofLua.com\r\n\r\n", 1)
+
+  if latestVersion and tonumber(latestVersion) > SCRIPT_VERSION then
+    local scriptData = ResourceRequest("LeagueofLua.com", "GET /OpenPredict/main.lua HTTP/1.1\r\nHost: LeagueofLua.com\r\n\r\n", 5)
+
+    if scriptData and pcall(loadstring(scriptData)) then
+      local file = assert(io.open(debug.getinfo(1).source:sub(2), "w"))
+      file:write(scriptData)
+      file:close()
+      return false
+    end
+  end
+end
+
 local myHero = GetMyHero()
 
 -- Constants
-local SCRIPT_VERSION = 0.03
-local DEV_STAGE = "a"
-local TEAM_ENEMY = GetTeam(myHero) == 100 and 200 or 100
+local TEAM_ALLY = GetTeam(myHero)
+local TEAM_ENEMY = (TEAM_ALLY == 100 and 200 or 100)
 local IMMOBILE_BUFFS = { }
+local MISSILE_SPEEDS = { }
 
 -- Script globals
 local activeAttacks = { }
@@ -62,6 +139,39 @@ do -- Populate the IMMOBILE_BUFFS table
   local bL = GetBuffTypeList()
   IMMOBILE_BUFFS = { [bL.Stun] = true, [bL.Taunt] = true, [bL.Snare] = true, [bL.Fear] = true, [bL.Charm] = true, [bL.Suppression] = true, [bL.Flee] = true, [bL.Knockup] = true, [bL.Knockback] = true }
 end
+
+-- Populate the MISSILE_SPEED table
+MISSILE_SPEEDS["HA_AP_ChaosTurret"] = 1200.0000
+MISSILE_SPEEDS["HA_AP_ChaosTurret2"] = 1200.0000
+MISSILE_SPEEDS["HA_AP_ChaosTurret3"] = 1200.0000
+MISSILE_SPEEDS["HA_AP_ChaosTurretShrine"] = 500.0000
+
+MISSILE_SPEEDS["HA_AP_OrderTurret"] = 1200.0000
+MISSILE_SPEEDS["HA_AP_OrderTurret2"] = 1200.0000
+MISSILE_SPEEDS["HA_AP_OrderTurret3"] = 1200.0000
+MISSILE_SPEEDS["HA_AP_OrderTurretShrine"] = 500.0000
+
+MISSILE_SPEEDS["SRU_ChaosMinionMelee"] = math.huge
+MISSILE_SPEEDS["SRU_ChaosMinionRanged"] = 650.0000
+MISSILE_SPEEDS["SRU_ChaosMinionSiege"] = 1200.0000
+MISSILE_SPEEDS["SRU_ChaosMinionSuper"] = math.huge
+
+MISSILE_SPEEDS["SRU_OrderMinionMelee"] = math.huge
+MISSILE_SPEEDS["SRU_OrderMinionRanged"] = 650.0000
+MISSILE_SPEEDS["SRU_OrderMinionSiege"] = 1200.0000
+MISSILE_SPEEDS["SRU_OrderMinionSuper"] = math.huge
+
+MISSILE_SPEEDS["SRUAP_Turret_Chaos1"] = 1200.0000
+MISSILE_SPEEDS["SRUAP_Turret_Chaos2"] = 1200.0000
+MISSILE_SPEEDS["SRUAP_Turret_Chaos3"] = 1200.0000
+MISSILE_SPEEDS["SRUAP_Turret_Chaos4"] = 1200.0000
+MISSILE_SPEEDS["SRUAP_Turret_Chaos5"] = 500.0000
+
+MISSILE_SPEEDS["SRUAP_Turret_Order1"] = 1200.0000
+MISSILE_SPEEDS["SRUAP_Turret_Order2"] = 1200.0000
+MISSILE_SPEEDS["SRUAP_Turret_Order3"] = 1200.0000
+MISSILE_SPEEDS["SRUAP_Turret_Order4"] = 1200.0000
+MISSILE_SPEEDS["SRUAP_Turret_Order5"] = 500.0000
 
 --[[
   predictInfo object
@@ -122,10 +232,10 @@ function predictInfo:mCollision(n)
 
   for minion in GetMinions(TEAM_ENEMY) do
     local p = GetOrigin(minion)
-    if sq_range == huge or (p.x - source.x) ^ 2 + (p.z - source.z) ^ 2 < sq_range then
+    if sq_range == huge or (p.x - source.x) ^ 2 + (p.z - source.z) ^ 2 - GetHitBox(minion) ^ 2 < sq_range then
       local t = CollisionTime(source, self.castPos, minion, self.meta.delay, self.meta.speed, self.meta.width)
 
-      if t and t > 0 then
+      if t and t > 0 and GetHealthPrediction(minion, 0.25 + t) > 0 then
         if n and #result + 1 > n then return true end
         insert(result, t < threshold and 1 or #result, minion)
       end
@@ -362,6 +472,41 @@ function GetConicAOEPrediction(unit, spellData, sourcePos)
   return pI
 end
 
+function GetHealthPrediction(unit, timeDelta)
+  local networkID, totalDamage = GetNetworkID(unit), 0
+
+  for nID, attackProc in pairs(activeAttacks) do
+    if attackProc.targetNetworkID == networkID and IsObjectAlive(attackProc.source) and not IsMoving(attackProc.source) then
+      -- Distance can alter during missile flight
+      local sP, eP = GetOrigin(attackProc.source), GetOrigin(unit)
+      local distance = math.sqrt((sP.x - eP.x) ^ 2 + (sP.z - eP.z) ^ 2)
+
+      -- Calculate the time of minion damage
+      local timeToHit = attackProc.startTime + attackProc.windUpTime
+      if attackProc.missileSpeed < math.huge then
+        timeToHit = timeToHit + distance / attackProc.missileSpeed
+      end
+
+      if GetGameTimer() < attackProc.startTime + timeToHit then
+        if GetGameTimer() + timeDelta > attackProc.startTime + attackProc.animationTime then
+          -- Calculate the timeDelta remaining after animationTime
+          local newDelta = timeDelta - max(0, (attackProc.animationTime - (GetGameTimer() - attackProc.startTime)))
+          local nAttacks = math.floor(newDelta / attackProc.animationTime) + (newDelta % attackProc.animationTime > timeToHit % attackProc.animationTime and 1 or 0)
+
+          totalDamage = totalDamage + GetBaseDamage(attackProc.source) * nAttacks
+        elseif GetGameTimer() + timeDelta > timeToHit then
+          totalDamage = totalDamage + GetBaseDamage(attackProc.source)
+        end
+      end
+
+      -- Prevent overcalculating
+      if totalDamage > GetCurrentHP(unit) then break end
+    end
+  end
+
+  return GetCurrentHP(unit) - totalDamage
+end
+
 -- CALLBACKS
 local MAX_SAMPLES = 10
 local function OnProcessWaypoint(unit, waypointProc)
@@ -452,10 +597,29 @@ local function OnDeleteObj(object)
   end
 end
 
+local function OnProcessSpell(unit, spellProc)
+  if spellProc.target and spellProc.name:find("BasicAttack") and MISSILE_SPEEDS[GetObjectName(unit)] then
+    activeAttacks[GetNetworkID(unit)] = {
+      startTime = GetGameTimer(),
+      windUpTime = spellProc.windUpTime,
+      missileSpeed = MISSILE_SPEEDS[GetObjectName(unit)],
+      animationTime = spellProc.animationTime,
+      source = unit,
+      targetNetworkID = GetNetworkID(spellProc.target)
+    }
+  end
+end
+
 local function OnProcessSpellAttack(unit, attackProc)
   if GetObjectType(unit) == Obj_AI_Hero then
-    local nID = GetNetworkID(unit)
-    activeAttacks[nID] = { startTime = GetGameTimer(), windUpTime = attackProc.windUpTime, castSpeed = attackProc.castSpeed }
+    activeAttacks[GetNetworkID(unit)] = {
+      startTime = GetGameTimer(),
+      windUpTime = attackProc.windUpTime,
+      missileSpeed = MISSILE_SPEEDS[GetObjectName(unit)] or math.huge,
+      animationTime = attackProc.animationTime,
+      source = unit,
+      targetNetworkID = GetNetworkID(attackProc.target)
+    }
   end
 end
 
@@ -620,263 +784,10 @@ _G.OnObjectLoad(OnCreateObj)
 _G.OnCreateObj(OnCreateObj)
 _G.OnDeleteObj(OnDeleteObj)
 
+_G.OnProcessSpell(OnProcessSpell)
 _G.OnProcessSpellAttack(OnProcessSpellAttack)
 
 _G.OnTick(ObjectHandler)
 
 _G.OpenPredict_Loaded = true
-PrintChat("<font color=\"#FFFFFF\"><b>OpenPredict</b> Loaded!</font>")
-
--- Auto Update
-do
-  local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-
-  function Base64Decode(data)
-    data = string.gsub(data, '[^'..b..'=]', '')
-    return (data:gsub('.', function(x)
-    if (x == '=') then return '' end
-    local r,f='',(b:find(x)-1)
-    for i=6,1,-1 do r=r..(f%2^i-f%2^(i-1)>0 and '1' or '0') end
-    return r;
-    end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
-    if (#x ~= 8) then return '' end
-    local c=0
-    for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
-    return string.char(c)
-    end))
-  end
-
-  function math.round(num, idp)
-    assert(type(num) == "number", "math.round: wrong argument types (<number> expected for num)")
-    assert(type(idp) == "number" or idp == nil, "math.round: wrong argument types (<integer> expected for idp)")
-    local mult = 10 ^ (idp or 0)
-    if num >= 0 then return math.floor(num * mult + 0.5) / mult
-    else return math.ceil(num * mult - 0.5) / mult
-    end
-  end
-
-  function string.split(str, delim, maxNb)
-    -- Eliminate bad cases...
-    if not delim or delim == "" or string.find(str, delim) == nil then
-      return { str }
-    end
-    maxNb = (maxNb and maxNb >= 1) and maxNb or 0
-    local result = {}
-    local pat = "(.-)" .. delim .. "()"
-    local nb = 0
-    local lastPos
-    for part, pos in string.gmatch(str, pat) do
-      nb = nb + 1
-      if nb == maxNb then
-        result[nb] = lastPos and string.sub(str, lastPos, #str) or str
-        break
-      end
-      result[nb] = part
-      lastPos = pos
-    end
-    -- Handle the last field
-    if nb ~= maxNb then
-      result[nb + 1] = string.sub(str, lastPos)
-    end
-    return result
-  end
-
-  class "ScriptUpdate"
-  function ScriptUpdate:__init(LocalVersion,UseHttps, Host, VersionPath, ScriptPath, SavePath, CallbackUpdate, CallbackNoUpdate, CallbackNewVersion,CallbackError)
-    self.LocalVersion = LocalVersion
-    self.Host = Host
-    self.VersionPath = '/GOS/TCPUpdater/GetScript'..(UseHttps and '5' or '6')..'.php?script='..self:Base64Encode(self.Host..VersionPath)..'&rand='..math.random(99999999)
-    self.ScriptPath = '/GOS/TCPUpdater/GetScript'..(UseHttps and '5' or '6')..'.php?script='..self:Base64Encode(self.Host..ScriptPath)..'&rand='..math.random(99999999)
-    self.SavePath = SavePath
-    self.CallbackUpdate = CallbackUpdate
-    self.CallbackNoUpdate = CallbackNoUpdate
-    self.CallbackNewVersion = CallbackNewVersion
-    self.CallbackError = CallbackError
-    OnDraw(function() self:OnDraw() end)
-    self:CreateSocket(self.VersionPath)
-    self.DownloadStatus = 'Connecting to Server for VersionInfo'
-    OnTick(function() self:GetOnlineVersion() end)
-  end
-
-  function ScriptUpdate:print(str)
-    print('<font color="#FFFFFF">'..os.clock()..': '..str)
-  end
-
-  function ScriptUpdate:OnDraw()
-    if self.DownloadStatus ~= 'Downloading Script (100%)' and self.DownloadStatus ~= 'Downloading VersionInfo (100%)'then
-      DrawText('Download Status: '..(self.DownloadStatus or 'Unknown'),50,10,50,ARGB(0xFF,0xFF,0xFF,0xFF))
-    end
-  end
-
-  function ScriptUpdate:CreateSocket(url)
-    if not self.LuaSocket then
-      self.LuaSocket = require("socket")
-    else
-      self.Socket:close()
-      self.Socket = nil
-      self.Size = nil
-      self.RecvStarted = false
-    end
-    self.LuaSocket = require("socket")
-    self.Socket = self.LuaSocket.tcp()
-    self.Socket:settimeout(0, 'b')
-    self.Socket:settimeout(99999999, 't')
-    self.Socket:connect('plebleaks.com', 80)
-    self.Url = url
-    self.Started = false
-    self.LastPrint = ""
-    self.File = ""
-  end
-
-  function ScriptUpdate:Base64Encode(data)
-    local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    return ((data:gsub('.', function(x)
-    local r,b='',x:byte()
-    for i=8,1,-1 do r=r..(b%2^i-b%2^(i-1)>0 and '1' or '0') end
-    return r;
-    end)..'0000'):gsub('%d%d%d?%d?%d?%d?', function(x)
-    if (#x < 6) then return '' end
-    local c=0
-    for i=1,6 do c=c+(x:sub(i,i)=='1' and 2^(6-i) or 0) end
-    return b:sub(c+1,c+1)
-    end)..({ '', '==', '=' })[#data%3+1])
-  end
-
-  function ScriptUpdate:GetOnlineVersion()
-    if self.GotScriptVersion then return end
-
-    self.Receive, self.Status, self.Snipped = self.Socket:receive(1024)
-    if self.Status == 'timeout' and not self.Started then
-      self.Started = true
-      self.Socket:send("GET "..self.Url.." HTTP/1.1\r\nHost: plebleaks.com\r\n\r\n")
-    end
-    if (self.Receive or (#self.Snipped > 0)) and not self.RecvStarted then
-      self.RecvStarted = true
-      self.DownloadStatus = 'Downloading VersionInfo (0%)'
-    end
-
-    self.File = self.File .. (self.Receive or self.Snipped)
-    if self.File:find('</s'..'ize>') then
-      if not self.Size then
-        self.Size = tonumber(self.File:sub(self.File:find('<si'..'ze>')+6,self.File:find('</si'..'ze>')-1))
-      end
-      if self.File:find('<scr'..'ipt>') then
-        local _,ScriptFind = self.File:find('<scr'..'ipt>')
-        local ScriptEnd = self.File:find('</scr'..'ipt>')
-        if ScriptEnd then ScriptEnd = ScriptEnd - 1 end
-        local DownloadedSize = self.File:sub(ScriptFind+1,ScriptEnd or -1):len()
-        self.DownloadStatus = 'Downloading VersionInfo ('..math.round(100/self.Size*DownloadedSize,2)..'%)'
-      end
-    end
-    if self.File:find('</scr'..'ipt>') then
-      self.DownloadStatus = 'Downloading VersionInfo (100%)'
-      local a,b = self.File:find('\r\n\r\n')
-      self.File = self.File:sub(a,-1)
-      self.NewFile = ''
-      for line,content in ipairs(self.File:split('\n')) do
-        if content:len() > 5 then
-          self.NewFile = self.NewFile .. content
-        end
-      end
-      local HeaderEnd, ContentStart = self.File:find('<scr'..'ipt>')
-      local ContentEnd, _ = self.File:find('</sc'..'ript>')
-      if not ContentStart or not ContentEnd then
-        if self.CallbackError and type(self.CallbackError) == 'function' then
-          self.CallbackError()
-        end
-      else
-        self.OnlineVersion = (Base64Decode(self.File:sub(ContentStart + 1,ContentEnd-1)))
-        self.OnlineVersion = tonumber(self.OnlineVersion)
-        if self.OnlineVersion > self.LocalVersion then
-          if self.CallbackNewVersion and type(self.CallbackNewVersion) == 'function' then
-            self.CallbackNewVersion(self.OnlineVersion,self.LocalVersion)
-          end
-          self:CreateSocket(self.ScriptPath)
-          self.DownloadStatus = 'Connect to Server for ScriptDownload'
-          OnTick(function() self:DownloadUpdate() end)
-        else
-          if self.CallbackNoUpdate and type(self.CallbackNoUpdate) == 'function' then
-            self.CallbackNoUpdate(self.LocalVersion)
-          end
-        end
-      end
-      self.GotScriptVersion = true
-    end
-  end
-
-  function ScriptUpdate:DownloadUpdate()
-    if self.GotScriptUpdate then return end
-    self.Receive, self.Status, self.Snipped = self.Socket:receive(1024)
-    if self.Status == 'timeout' and not self.Started then
-      self.Started = true
-      self.Socket:send("GET "..self.Url.." HTTP/1.1\r\nHost: plebleaks.com\r\n\r\n")
-    end
-    if (self.Receive or (#self.Snipped > 0)) and not self.RecvStarted then
-      self.RecvStarted = true
-      self.DownloadStatus = 'Downloading Script (0%)'
-    end
-
-    self.File = self.File .. (self.Receive or self.Snipped)
-    if self.File:find('</si'..'ze>') then
-      if not self.Size then
-        self.Size = tonumber(self.File:sub(self.File:find('<si'..'ze>')+6,self.File:find('</si'..'ze>')-1))
-      end
-      if self.File:find('<scr'..'ipt>') then
-        local _,ScriptFind = self.File:find('<scr'..'ipt>')
-        local ScriptEnd = self.File:find('</scr'..'ipt>')
-        if ScriptEnd then ScriptEnd = ScriptEnd - 1 end
-        local DownloadedSize = self.File:sub(ScriptFind+1,ScriptEnd or -1):len()
-        self.DownloadStatus = 'Downloading Script ('..math.round(100/self.Size*DownloadedSize,2)..'%)'
-      end
-    end
-    if self.File:find('</scr'..'ipt>') then
-      self.DownloadStatus = 'Downloading Script (100%)'
-      local a,b = self.File:find('\r\n\r\n')
-      self.File = self.File:sub(a,-1)
-      self.NewFile = ''
-      for line,content in ipairs(self.File:split('\n')) do
-        if content:len() > 5 then
-          self.NewFile = self.NewFile .. content
-        end
-      end
-      local HeaderEnd, ContentStart = self.NewFile:find('<sc'..'ript>')
-      local ContentEnd, _ = self.NewFile:find('</scr'..'ipt>')
-      if not ContentStart or not ContentEnd then
-        if self.CallbackError and type(self.CallbackError) == 'function' then
-          self.CallbackError()
-        end
-      else
-        local newf = self.NewFile:sub(ContentStart+1,ContentEnd-1)
-        local newf = newf:gsub('\r','')
-        if newf:len() ~= self.Size then
-          if self.CallbackError and type(self.CallbackError) == 'function' then
-            self.CallbackError()
-          end
-          return
-        end
-        local newf = Base64Decode(newf)
-        local f = io.open(self.SavePath,"w+b")
-        f:write(newf)
-        f:close()
-        if self.CallbackUpdate and type(self.CallbackUpdate) == 'function' then
-          self.CallbackUpdate(self.OnlineVersion,self.LocalVersion)
-        end
-      end
-      self.GotScriptUpdate = true
-    end
-  end
-
-  local ToUpdate = { }
-  ToUpdate.Version = SCRIPT_VERSION
-  ToUpdate.UseHttps = true
-  ToUpdate.Host = "raw.githubusercontent.com"
-  ToUpdate.VersionPath = "/Jo7j/GoS/master/OpenPredict/OpenPredict.version"
-  ToUpdate.ScriptPath =  "/Icesythe7/GOS/master/OpenPredict.lua"
-  ToUpdate.SavePath = COMMON_PATH.."/OpenPredict.lua"
-  ToUpdate.CallbackUpdate = function(NewVersion,OldVersion) PrintChat("<font color=\"#FFFFFF\"><b>OpenPredict</b> Updated to (" ..NewVersion.. ") Please Reload with 2x F6.</font>") end
-  ToUpdate.CallbackNoUpdate = function(OldVersion) PrintChat("<font color=\"#FFFFFF\"><b>OpenPredict</b> No Updates Found! Version " .. ToUpdate.Version .. DEV_STAGE .. " Loaded!</font>") end
-  ToUpdate.CallbackNewVersion = function(NewVersion) PrintChat("<font color=\"#FFFFFF\"><b>OpenPredict</b> New Version found (" ..NewVersion.. "). Please wait until its downloaded</font>") end
-  ToUpdate.CallbackError = function(NewVersion) PrintChat("<font color=\"#FFFFFF\"><b>OpenPredict</b> Error while Downloading. Please try again.</font>") end
-
-  ScriptUpdate(ToUpdate.Version,ToUpdate.UseHttps, ToUpdate.Host, ToUpdate.VersionPath, ToUpdate.ScriptPath, ToUpdate.SavePath, ToUpdate.CallbackUpdate,ToUpdate.CallbackNoUpdate, ToUpdate.CallbackNewVersion,ToUpdate.CallbackError)
-end
+PrintChat("<font color=\"#FFFFFF\"><b>OpenPredict</b> " .. SCRIPT_VERSION .. DEV_STAGE .. " loaded!</font>")
