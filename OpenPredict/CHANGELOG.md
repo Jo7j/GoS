@@ -5,6 +5,7 @@
 - Fog-of-war prediction (for brief time).
 - Added member predictInfo.timeToHit.
 - Added global _G.OpenPredict_Version.
+- GetHealthPrediction now return predicted health and aggro count.
 ### Fixed
 - Health Prediction (a lot of bugs with previous version due to lack of testing).
 - Hit chance for conic spells (dynamic width based on distance & angle).
