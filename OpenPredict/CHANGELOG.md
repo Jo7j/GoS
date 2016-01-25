@@ -6,9 +6,11 @@
 - Added member predictInfo.timeToHit.
 - Added global _G.OpenPredict_Version.
 - GetHealthPrediction now return predicted health and aggro count.
+
 ### Fixed
 - Health Prediction (a lot of bugs with previous version due to lack of testing).
 - Hit chance for conic spells (dynamic width based on distance & angle).
+
 ### Removed
 - Auto updater.
 - _G.OpenPredict_Loaded (replaced with _G.OpenPredict_Version).
