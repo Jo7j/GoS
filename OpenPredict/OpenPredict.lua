@@ -1,5 +1,5 @@
 --[[
-  OpenPredict 0.04a
+  OpenPredict 0.05a
 
   THIS SCRIPT IS STILL IN ALPHA STAGE THEREFORE YOU MAY EXPERIENCE BUGS.
 
@@ -8,6 +8,7 @@
       .x, .y, .z
       .castPos
       .hitChance
+      .timeToHit
       .meta
 
     methods:
@@ -23,7 +24,7 @@
     .width - Full width of the spell (2 × radius).
     .range - Maximum range of the spell.
 
-    .radius - Radius of the spell (width ÷ 2).
+    .radius - Radius of the spell (width ÷ 2) (used for GetCircularAOEPrediction).
     .angle - Angle of the spell (used for GetConicAOEPrediction).
 
   Core methods:
@@ -37,81 +38,7 @@
 ]]
 
 -- Simple prerequisite
-if _G.OpenPredict_Loaded then return end
-
-local SCRIPT_VERSION = 0.04
-local DEV_STAGE = "a"
-
-do -- Auto Update
-  function ResourceRequest(host, requestURI, timeout)
-    -- Require the LuaSocket module
-    LuaSocket = LuaSocket or require("socket")
-    client = client or LuaSocket.tcp() -- Create the client socket
-
-    client:connect(host, 80) -- Connect to host on port 80
-
-    -- Send HTTP request
-    client:send(requestURI)
-
-    -- Receive the first line
-    local line, error = client:receive()
-    client:settimeout(timeout)
-
-    if not error and line == "HTTP/1.1 200 OK" then
-      -- Read HTTP headers
-      local headers = { }
-
-      while line ~= "" do
-        line, error = client:receive()
-        if error then PrintChat(error) end
-
-        local name, value = LuaSocket.skip(2, string.find(line, "^(.-):%s*(.*)"))
-
-        if name and value then
-          headers[name] = value
-        end
-      end
-
-      if headers["Content-Length"] then
-        data, error = client:receive(tonumber(headers["Content-Length"]))
-        if error then return PrintChat(error) end
-        return data
-      elseif headers["Transfer-Encoding"] and headers["Transfer-Encoding"] == "chunked" then
-        local buffer = ""
-        local chunkSize, data
-
-        chunkSize, error = client:receive()
-        if error then return PrintChat(error) end
-        chunkSize = tonumber(chunkSize, 16)
-
-        while chunkSize > 0 do
-          data, error = client:receive(chunkSize)
-          if error then return PrintChat(error) end
-          buffer = buffer .. data
-
-          chunkSize, error = client:receive()
-          if error then return PrintChat(error) end
-          chunkSize = tonumber(chunkSize, 16) or 0
-        end
-
-        return buffer
-      end
-    end
-  end
-
-  local latestVersion = ResourceRequest("LeagueofLua.com", "GET /OpenPredict/VERSION HTTP/1.1\r\nHost: LeagueofLua.com\r\n\r\n", 1)
-
-  if latestVersion and tonumber(latestVersion) > SCRIPT_VERSION then
-    local scriptData = ResourceRequest("LeagueofLua.com", "GET /OpenPredict/main.lua HTTP/1.1\r\nHost: LeagueofLua.com\r\n\r\n", 5)
-
-    if scriptData and pcall(loadstring(scriptData)) then
-      local file = assert(io.open(debug.getinfo(1).source:sub(2), "w"))
-      file:write(scriptData)
-      file:close()
-      return false
-    end
-  end
-end
+if _G.OpenPredict_Version then return end
 
 local myHero = GetMyHero()
 
@@ -126,14 +53,16 @@ local activeAttacks = { }
 local activeDashes = { }
 local activeImmobility = { }
 local activeWaypoints = { }
+local activeMIA = { }
+local activeRecalls = { }
 
---
-local minionUnits = { }
+local minionUnits, minionAttacks = { }, { }
 local allyHeroes, enemyHeroes = { }, { }
 
 --
-local abs, acos, deg, epsilon, huge, max, min, pi, sin, sqrt = math.abs, math.acos, math.deg, 1e-9, math.huge, math.max, math.min, math.pi, math.sin, math.sqrt
+local abs, acos, deg, epsilon, huge, max, min, pi, sin, cos, sqrt = math.abs, math.acos, math.deg, 1e-9, math.huge, math.max, math.min, math.pi, math.sin, math.cos, math.sqrt
 local insert, remove = table.insert, table.remove
+--
 
 do -- Populate the IMMOBILE_BUFFS table
   local bL = GetBuffTypeList()
@@ -189,6 +118,7 @@ MISSILE_SPEEDS["SRUAP_Turret_Order5"] = 500.0000
     predictInfo.z
     predictInfo.castPos
     predictInfo.hitChance
+    predictInfo.timeToHit
     predictInfo.meta
 ]]
 
@@ -202,6 +132,7 @@ function predictInfo.new(vec3)
   pI.x, pI.y, pI.z = vec3.x, vec3.y, vec3.z
   pI.castPos = vec3
   pI.hitChance = 0
+  pI.timeToHit = 0
   pI.meta = { }
 
   return pI
@@ -261,8 +192,13 @@ function GetPrediction(unit, spellData, sourcePos)
 
   local nID = GetNetworkID(unit)
 
-  if activeWaypoints[nID] and activeWaypoints[nID].count > 0 and IsMoving(unit) then
+  if activeWaypoints[nID] and IsMoving(unit) then
     local sP, timeElapsed = GetOrigin(unit), 0
+    local timeMissing = (not IsVisible(unit) and activeMIA[nID]) and GetGameTimer() - activeMIA[nID] or -math.huge
+
+    if activeRecalls[nID] then
+      timeMissing = timeMissing - (GetGameTimer() - activeRecalls[nID].startTime)
+    end
 
     for i, eP in GetWaypoints(unit) do
       -- Prerequisite variables
@@ -271,67 +207,100 @@ function GetPrediction(unit, spellData, sourcePos)
       local velocity = activeDashes[nID] or GetMoveSpeed(unit)
       local travelTime = magnitude / velocity
 
-      dx, dy, dz = (dx / magnitude) * velocity, dy / magnitude, (dz / magnitude) * velocity
+      if timeMissing < 1 and travelTime > timeMissing then
+        dx, dy, dz = (dx / magnitude) * velocity, dy / magnitude, (dz / magnitude) * velocity
 
-      local t = GetLatency() * 0.001 + delay
-
-      -- Calculate the interception time
-      if speed ~= huge then
-        local a = (dx * dx) + (dz * dz) - (speed * speed)
-        local b = 2 * ((sP.x * dx) + (sP.z * dz) - (source.x * dx) - (source.z * dz))
-        local c = (sP.x * sP.x) + (sP.z * sP.z) + (source.x * source.x) + (source.z * source.z) - (2 * source.x * sP.x) - (2 * source.z * sP.z)
-        local discriminant = (b * b) - (4 * a * c)
-
-        local t1 = (-b + sqrt(discriminant)) / (2 * a)
-        local t2 = (-b - sqrt(discriminant)) / (2 * a)
-
-        -- Greater of the two roots
-        t = t + max(t1, t2)
-
-        if spellData.accel then
-          local v = speed + spellData.accel * t
-          if spellData.minSpeed then v = max(spellData.minSpeed, v) end
-          if spellData.maxSpeed then v = min(spellData.maxSpeed, v) end
-          t = abs((v - speed) / spellData.accel)
+        if timeMissing > 0 then
+          sP.x = sP.x + dx * timeMissing
+          sP.y = sP.y + dy * timeMissing
+          sP.z = sP.z + dz * timeMissing
         end
-      end
 
-      if i == activeWaypoints[nID].count - 1 or (t > 0 and t < timeElapsed + travelTime) then
-        -- Calculate the point of interception
-        local displacement = min((t - timeElapsed) * velocity, magnitude)
-        pI.x, pI.y, pI.z = sP.x + displacement * (dx / velocity), sP.y + displacement * dy, sP.z + displacement * (dz / velocity)
+        local t = GetLatency() * 0.001 + delay
 
-        -- Compute the hit chance
-        if activeDashes[nID] then
-          -- Dash velocity is faster but the path is far less likely to be altered
-          pI.hitChance = 0.99
-        else
-          -- Interception time, unit velocity and spell width/radius all influence the probability
-          pI.hitChance = min(1, ((1.5 * width) / velocity) / t)
+        -- Calculate the interception time
+        if not activeRecalls[nID] and speed ~= huge then
+          local a = (dx * dx) + (dz * dz) - (speed * speed)
+          local b = 2 * ((sP.x * dx) + (sP.z * dz) - (source.x * dx) - (source.z * dz))
+          local c = (sP.x * sP.x) + (sP.z * sP.z) + (source.x * source.x) + (source.z * source.z) - (2 * source.x * sP.x) - (2 * source.z * sP.z)
+          local discriminant = (b * b) - (4 * a * c)
 
-          -- Waypoint analysis using sample data
-          local samples = activeWaypoints[nID].samples
+          local t1 = (-b + sqrt(discriminant)) / (2 * a)
+          local t2 = (-b - sqrt(discriminant)) / (2 * a)
 
-          local rate = 1 -- Waypoint rate
-          for i = 1, #samples do
-            if GetGameTimer() - samples[i] < 0.25 then rate = rate + 1 end
-          end
+          -- Greater of the two roots
+          t = t + max(t1, t2)
 
-          if rate > 1 then
-            local p1, p2, v = GetOrigin(unit), eP, samples.lastWaypointDir
-
-            local dot = (p2.x - p1.x) * v.x + (p2.z - p1.z) * v.z
-            local d1, d2 = sqrt((p2.x - p1.x) ^ 2 + (p2.z - p1.z) ^ 2), sqrt(v.x * v.x + v.z * v.z)
-            local theta = max(1, deg(acos(dot / (d1 * d2))))
-
-            pI.hitChance = pI.hitChance * (1 - ((theta * rate) / (180 * rate)))
+          if spellData.accel then
+            local v = speed + spellData.accel * t
+            if spellData.minSpeed then v = max(spellData.minSpeed, v) end
+            if spellData.maxSpeed then v = min(spellData.maxSpeed, v) end
+            t = abs((v - speed) / spellData.accel)
           end
         end
 
-        break
+        if i == activeWaypoints[nID].count - 1 or (t > 0 and t < timeElapsed + travelTime) then
+          -- Calculate the point of interception
+          if timeMissing > 0 then
+            pI.x, pI.y, pI.z = sP.x, sP.y, sP.z
+          else
+            local displacement = min((t - timeElapsed) * velocity, magnitude)
+
+            if spellData.angle and spellData.angle > 1 then
+              local b, c = displacement, displacement
+              local A = spellData.angle
+              width = sqrt(b ^ 2 + c ^ 2 - 2 * b * c * cos(A))
+            end
+
+            pI.x, pI.y, pI.z = sP.x + displacement * (dx / velocity), sP.y + displacement * dy, sP.z + displacement * (dz / velocity)
+          end
+
+          -- Compute the hit chance
+          if activeDashes[nID] then
+            -- Dash velocity is faster but the path is far less likely to be altered
+            pI.hitChance = 0.99
+          else
+            -- Interception time, unit velocity and spell width/radius all influence the probability
+            pI.hitChance = min(0.99, max(10, width / velocity) / t)
+
+            -- Waypoint analysis using sample data
+            local samples = activeWaypoints[nID].samples
+
+            local rate = 1 -- Waypoint rate
+            for i = 1, #samples do
+              if GetGameTimer() - samples[i] < 0.25 then rate = rate + 1 end
+            end
+
+            if rate > 1 then
+              local p1, p2, v = GetOrigin(unit), eP, samples.lastWaypointDir
+
+              local dot = (p2.x - p1.x) * v.x + (p2.z - p1.z) * v.z
+              local d1, d2 = sqrt((p2.x - p1.x) ^ 2 + (p2.z - p1.z) ^ 2), sqrt(v.x * v.x + v.z * v.z)
+              local theta = max(1, deg(acos(dot / (d1 * d2))))
+
+              pI.hitChance = pI.hitChance * (1 - ((theta * rate) / (180 * rate)))
+            end
+
+            -- Half the hitchance if predicting in FOW
+            if not IsVisible(unit) then
+              pI.hitChance = 0.5 * pI.hitChance
+            end
+          end
+
+          pI.timeToHit = t
+          break
+        end
+      else
+        if timeMissing > 1 then
+          pI.hitChance = -1
+        end
+
+        pI.x, pI.y, pI.z = sP.x, sP.y, sP.z
       end
 
-      timeElapsed, sP = timeElapsed + travelTime, eP
+      sP = eP -- Set new start position
+      timeElapsed = timeElapsed + travelTime
+      timeMissing = timeMissing - travelTime
     end
   else
     local sP = GetOrigin(unit)
@@ -352,6 +321,8 @@ function GetPrediction(unit, spellData, sourcePos)
     else
       pI.hitChance = min(1, (width / GetMoveSpeed(unit)) / t)
     end
+
+    pI.timeToHit = t
   end
 
   if range ~= huge then
@@ -473,38 +444,39 @@ function GetConicAOEPrediction(unit, spellData, sourcePos)
 end
 
 function GetHealthPrediction(unit, timeDelta)
-  local networkID, totalDamage = GetNetworkID(unit), 0
+  local totalDamage, nAggro = 0, 0
 
-  for nID, attackProc in pairs(activeAttacks) do
-    if attackProc.targetNetworkID == networkID and IsObjectAlive(attackProc.source) and not IsMoving(attackProc.source) then
-      -- Distance can alter during missile flight
-      local sP, eP = GetOrigin(attackProc.source), GetOrigin(unit)
-      local distance = math.sqrt((sP.x - eP.x) ^ 2 + (sP.z - eP.z) ^ 2)
+  for i = #minionAttacks, 1, -1 do
+    if IsObjectAlive(minionAttacks[i].source) and IsObjectAlive(minionAttacks[i].target) and not IsMoving(minionAttacks[i].source) then
+      local basicAttack = minionAttacks[i]
 
-      -- Calculate the time of minion damage
-      local timeToHit = attackProc.startTime + attackProc.windUpTime
-      if attackProc.missileSpeed < math.huge then
-        timeToHit = timeToHit + distance / attackProc.missileSpeed
-      end
+      if unit == basicAttack.target then
+        nAggro = nAggro + 1
 
-      if GetGameTimer() < attackProc.startTime + timeToHit then
-        if GetGameTimer() + timeDelta > attackProc.startTime + attackProc.animationTime then
-          -- Calculate the timeDelta remaining after animationTime
-          local newDelta = timeDelta - max(0, (attackProc.animationTime - (GetGameTimer() - attackProc.startTime)))
-          local nAttacks = math.floor(newDelta / attackProc.animationTime) + (newDelta % attackProc.animationTime > timeToHit % attackProc.animationTime and 1 or 0)
+        -- Distance can alter during missile flight
+        local sP, eP = GetOrigin(basicAttack.source), GetOrigin(basicAttack.target)
+        local distance = math.sqrt((sP.x - eP.x) ^ 2 + (sP.z - eP.z) ^ 2)
 
-          totalDamage = totalDamage + GetBaseDamage(attackProc.source) * nAttacks
-        elseif GetGameTimer() + timeDelta > timeToHit then
-          totalDamage = totalDamage + GetBaseDamage(attackProc.source)
+        -- Calculate the time of minion damage
+        local timeToHit = basicAttack.castTime
+        if basicAttack.missileSpeed < math.huge then
+          timeToHit = timeToHit + (distance) / basicAttack.missileSpeed
         end
-      end
 
-      -- Prevent overcalculating
-      if totalDamage > GetCurrentHP(unit) then break end
+        local startTime = basicAttack.startTime + math.floor((GetGameTimer() - basicAttack.startTime) / basicAttack.animTime)
+        if GetGameTimer() < startTime + timeToHit and GetGameTimer() + timeDelta > startTime + timeToHit then
+          totalDamage = totalDamage + GetBaseDamage(basicAttack.source)
+        end
+
+        -- Prevent overcalculating
+        if totalDamage > GetCurrentHP(unit) then break end
+      end
+    else
+      table.remove(minionAttacks, i)
     end
   end
 
-  return GetCurrentHP(unit) - totalDamage
+  return GetCurrentHP(unit) - totalDamage, nAggro
 end
 
 -- CALLBACKS
@@ -597,29 +569,49 @@ local function OnDeleteObj(object)
   end
 end
 
-local function OnProcessSpell(unit, spellProc)
-  if spellProc.target and spellProc.name:find("BasicAttack") and MISSILE_SPEEDS[GetObjectName(unit)] then
-    activeAttacks[GetNetworkID(unit)] = {
-      startTime = GetGameTimer(),
-      windUpTime = spellProc.windUpTime,
-      missileSpeed = MISSILE_SPEEDS[GetObjectName(unit)],
-      animationTime = spellProc.animationTime,
-      source = unit,
-      targetNetworkID = GetNetworkID(spellProc.target)
-    }
+local function OnProcessSpellAttack(unit, attackProc)
+  if MISSILE_SPEEDS[GetObjectName(unit)] and GetTeam(unit) == TEAM_ALLY then
+    local t = { }
+    t.source = unit
+    t.target = attackProc.target
+    t.startTime = GetGameTimer()
+    t.castTime = attackProc.windUpTime
+    t.missileSpeed = MISSILE_SPEEDS[GetObjectName(unit)]
+    t.animTime = attackProc.animationTime
+
+    for i = 1, #minionAttacks do
+      if minionAttacks[i].source == unit then
+        table.remove(minionAttacks, i)
+        break
+      end
+    end
+
+    table.insert(minionAttacks, t)
+  elseif GetObjectType(unit) == Obj_AI_Hero then
+    local t = { }
+    t.startTime = GetGameTimer()
+    t.castTime = attackProc.windUpTime
+    t.animTime = attackProc.animationTime
+
+    activeAttacks[GetNetworkID(unit)] = t
   end
 end
 
-local function OnProcessSpellAttack(unit, attackProc)
+local function OnLoseVision(unit)
   if GetObjectType(unit) == Obj_AI_Hero then
-    activeAttacks[GetNetworkID(unit)] = {
-      startTime = GetGameTimer(),
-      windUpTime = attackProc.windUpTime,
-      missileSpeed = MISSILE_SPEEDS[GetObjectName(unit)] or math.huge,
-      animationTime = attackProc.animationTime,
-      source = unit,
-      targetNetworkID = GetNetworkID(attackProc.target)
-    }
+    activeMIA[GetNetworkID(unit)] = GetGameTimer()
+  end
+end
+
+local function OnProcessRecall(unit, recallProc)
+  if recallProc.isStart then
+    local t = { }
+    t.startTime = GetGameTimer()
+    t.endTime = recallProc.totalTime * 0.001
+
+    activeRecalls[GetNetworkID(unit)] = t
+  elseif activeRecalls[GetNetworkID(unit)] then
+    activeRecalls[GetNetworkID(unit)] = nil
   end
 end
 
@@ -711,7 +703,7 @@ IsAttacking = function(unit)
 
   if activeAttacks[nID] then
     local attack = activeAttacks[nID]
-    return GetGameTimer() < attack.startTime + attack.windUpTime, (attack.startTime + attack.windUpTime) - GetGameTimer()
+    return GetGameTimer() < attack.startTime + attack.castTime, (attack.startTime + attack.castTime) - GetGameTimer()
   end
 end
 
@@ -784,10 +776,12 @@ _G.OnObjectLoad(OnCreateObj)
 _G.OnCreateObj(OnCreateObj)
 _G.OnDeleteObj(OnDeleteObj)
 
-_G.OnProcessSpell(OnProcessSpell)
 _G.OnProcessSpellAttack(OnProcessSpellAttack)
+
+_G.OnLoseVision(OnLoseVision)
+_G.OnProcessRecall(OnProcessRecall)
 
 _G.OnTick(ObjectHandler)
 
-_G.OpenPredict_Loaded = true
-PrintChat("<font color=\"#FFFFFF\"><b>OpenPredict</b> " .. SCRIPT_VERSION .. DEV_STAGE .. " loaded!</font>")
+_G.OpenPredict_Version = "0.05a"
+PrintChat("<font color=\"#FFFFFF\"><b>OpenPredict</b> " .. OpenPredict_Version .. " loaded!</font>")
