@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.05a] - 2016-01-25
+### Added
+- Fog-of-war prediction (for brief time).
+- Added member predictInfo.timeToHit.
+- Added global _G.OpenPredict_Version.
+### Fixed
+- Health Prediction (a lot of bugs with previous version due to lack of testing).
+- Hit chance for conic spells (dynamic width based on distance & angle).
+### Removed
+- Auto updater.
+- _G.OpenPredict_Loaded (replaced with _G.OpenPredict_Version).
+
 ## [0.04a] - 2016-01-14
 ### Added
 - Health prediction (GetHealthPrediction).
