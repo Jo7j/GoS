@@ -1,4 +1,4 @@
-OpenPredict 0.04a
+OpenPredict 0.05a
 ===========
 
 #####Core Functions:
@@ -18,7 +18,7 @@ All core functions return a predictInfo object (see below).
 
 #####Extra functions:
 ```lua
-GetHealthPrediction(unit, timeDelta)          -- Returns predicted health (as number).
+GetHealthPrediction(unit, timeDelta)          -- Returns predicted health (as number) and aggro count.
 ```
 
 #####predictInfo:
@@ -31,6 +31,7 @@ members:
     
 	predictInfo.castPos                       -- 3D vector containing above values.
 	predictInfo.hitChance                     -- Probability of skillshot hitting target (0.0f - 1.0f)
+	predictInfo.timeToHit                     -- Predicted time of spell damage.
 	predictInfo.meta                          -- Internal use only.
   
 methods:
@@ -50,7 +51,7 @@ spellData
 	.width                                    -- Full width of the spell (2 × radius).
 	.range                                    -- Maximum range of the spell.
 
-	.radius                                   -- Radius of the spell (width ÷ 2).
+	.radius                                   -- Radius of the spell (width ÷ 2) (used for GetCircular Prediction).
 	.angle                                    -- Angle of the spell (used for GetConicAOEPrediction).
 ```
 
