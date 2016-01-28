@@ -50,8 +50,7 @@ spellData
 	.maxSpeed                                 -- Maximum projectile speed.
 	.width                                    -- Full width of the spell (2 × radius).
 	.range                                    -- Maximum range of the spell.
-
-	.radius                                   -- Radius of the spell (width ÷ 2) (used for GetCircular Prediction).
+	.radius                                   -- Radius of the spell (width ÷ 2).
 	.angle                                    -- Angle of the spell (used for GetConicAOEPrediction).
 ```
 
